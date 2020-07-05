@@ -4,22 +4,33 @@
 
 import re
 import time
-import random
 
 import paho.mqtt.client as mqtt
+from bluepy import btle
 
 MQTT_TOPIC_HUMIDITY = 'home/mijia/humidity'
 MQTT_TOPIC_TEMPERATURE = 'home/mijia/temperature'
 MQTT_TOPIC_BATTERY = 'home/mijia/battery'
 MQTT_TOPIC_STATE = 'home/mijia/status'
 
-MQTT_PUBLISH_DELAY = 5
+MQTT_PUBLISH_DELAY = 60
 MQTT_CLIENT_ID = 'mijia'
 
-#MQTT_SERVER = 'localhost'
-MQTT_SERVER = 'mosquitto'
+MQTT_SERVER = 'homeserver'
 MQTT_USER = 'mqttuser'
 MQTT_PASSWORD = 'mqttpassword'
+
+MIJIA_BTLE_ADDRESS = '4c:65:a8:d7:fb:36'
+
+MIJIA_BATTERY_SERVICE_UUID = btle.UUID('180f')
+MIJIA_BATTERY_CHARACTERISTIC_UUID = btle.UUID('2a19')
+
+MIJIA_DATA_SERVICE_UUID = btle.UUID('226c0000-6476-4566-7562-66734470666d')
+MIJIA_DATA_CHARACTERISTIC_UUID = btle.UUID('226caa55-6476-4566-7562-66734470666d')
+MIJIA_DATA_CHARACTERISTIC_HANDLE = 0x0010
+
+BTLE_SUBSCRIBE_VALUE = bytes([0x01, 0x00])
+BTLE_UNSUBSCRIBE_VALUE = bytes([0x00, 0x00])
 
 battery = None
 temperature = None
@@ -28,6 +39,14 @@ humidity = None
 
 def on_connect(client, userdata, flags, rc):
     client.publish(MQTT_TOPIC_STATE, 'connected', 1, True)
+
+
+class MyDelegate(btle.DefaultDelegate):
+    def __init__(self):
+        btle.DefaultDelegate.__init__(self)
+
+    def handleNotification(self, cHandle, data):
+        fetch_sensor_data(bytearray(data).decode('utf-8'))
 
 
 def main():
@@ -40,9 +59,33 @@ def main():
     mqttc.loop_start()
 
     last_msg_time = time.time()
-    reset_variables()
 
     while True:
+        try:
+            print('Connecting to ' + MIJIA_BTLE_ADDRESS)
+            dev = btle.Peripheral(MIJIA_BTLE_ADDRESS)
+            print('Set delegate')
+            dev.setDelegate(MyDelegate())
+
+            # Get battery level
+            if battery is None:
+                fetch_battery_level(dev)
+                print('Battery level: ' + str(battery))
+
+            # Subscribe to data characteristic
+            if temperature is None or humidity is None:
+                dev.writeCharacteristic(MIJIA_DATA_CHARACTERISTIC_HANDLE, BTLE_SUBSCRIBE_VALUE, True)
+                while True:
+                    if dev.waitForNotifications(1.0):
+                        print('Temperature: ' + temperature)
+                        print('Humidity: ' + humidity)
+                        dev.writeCharacteristic(MIJIA_DATA_CHARACTERISTIC_HANDLE, BTLE_UNSUBSCRIBE_VALUE, True)
+                        dev.disconnect()
+                        break
+
+        except (btle.BTLEDisconnectError, IOError):
+            print("Disconnected :)")
+
         if battery is not None and temperature is not None and humidity is not None:
             delay_gap = time.time() - last_msg_time
             if delay_gap < MQTT_PUBLISH_DELAY:
@@ -61,9 +104,6 @@ def reset_variables():
     battery = None
     temperature = None
     humidity = None
-    battery = 90 + random.random()
-    temperature = 37 + random.random()
-    humidity = 30 + random.random()
 
 
 def fetch_battery_level(dev):
@@ -86,7 +126,6 @@ def fetch_sensor_data(temp_hum):
 
 
 def publish_sensor_data(mqttc):
-    print('publish data to mqtt server.')
     mqttc.publish(MQTT_TOPIC_TEMPERATURE, temperature, 1, True)
     mqttc.publish(MQTT_TOPIC_HUMIDITY, humidity, 1, True)
     mqttc.publish(MQTT_TOPIC_BATTERY, battery, 1, True)
