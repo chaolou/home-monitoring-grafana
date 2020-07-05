@@ -41,3 +41,12 @@ services:
       - mosquitto
       - influxdb
     restart: always
+
+  mqttclient:
+    build: ./04-mijia_ble_mqtt
+    image: nilhcem/mijia_client
+    container_name: mijiaclient
+    depends_on:
+      - mosquitto
+      - influxdb
+    restart: always
